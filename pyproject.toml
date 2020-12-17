@@ -18,6 +18,7 @@ scikit-image = "^0.17.2"
 cmake = "^3.18.4"
 dlib = "^19.21.1"
 opencv-python = "^4.4.0"
+jupyterlab = "^2.2.9"
 
 [tool.poetry.dev-dependencies]
 
