@@ -19,6 +19,9 @@ cmake = "^3.18.4"
 dlib = "^19.21.1"
 opencv-python = "^4.4.0"
 jupyterlab = "^2.2.9"
+jupyterplot = "^0.0.3"
+PyQt5 = "^5.15.2"
+torchvision = "^0.8.2"
 
 [tool.poetry.dev-dependencies]
 
