@@ -163,9 +163,9 @@ class PoseEstimator:
             points, R, t, self.camera_matrix, self.dist_coeefs)
 
         img = cv2.line(img, tuple(axisPoints[3].ravel()), tuple(
-            axisPoints[0].ravel()), (255, 0, 0), 3)
+            axisPoints[0].ravel()), (0, 255, 0), 3)
         img = cv2.line(img, tuple(axisPoints[3].ravel()), tuple(
-            axisPoints[1].ravel()), (0, 255, 0), 3)
+            axisPoints[1].ravel()), (255, 0, 0), 3)
         img = cv2.line(img, tuple(axisPoints[3].ravel()), tuple(
             axisPoints[2].ravel()), (0, 0, 255), 3)
 
