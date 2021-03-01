@@ -1,0 +1,4 @@
+1) Fix frame rate calculation
+2) implement graceful exit of prerecorded videos (no Q) 
+3) HRV scaling
+4) fix overlap add
