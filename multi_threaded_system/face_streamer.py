@@ -46,7 +46,6 @@ rppg_filtered = queue.Queue()
 
 
 class FaceStreamer:
-
     def __init__(self, predictor_path, filename=None):
 
         self.filename = filename
@@ -57,18 +56,27 @@ class FaceStreamer:
         # Create landmark predictor.
         self.predictor = dlib.shape_predictor(predictor_path)
 
-        self.facial_landmarks_ids = OrderedDict([
-            ("face", (0, 26)),
-            ("left_eye", (37, 42)),
-            ("right_eye", (43, 48)),
-        ])
+        self.facial_landmarks_ids = OrderedDict(
+            [
+                ("face", (0, 26)),
+                ("left_eye", (37, 42)),
+                ("right_eye", (43, 48)),
+            ]
+        )
 
         self.width = 400
         self.frame_count = 0
 
-        self.colors = [(19, 199, 109), (79, 76, 240), (230, 159, 23),
-                       (168, 100, 168), (158, 163, 32),
-                       (163, 38, 32), (180, 42, 220), (100, 150, 250)]
+        self.colors = [
+            (19, 199, 109),
+            (79, 76, 240),
+            (230, 159, 23),
+            (168, 100, 168),
+            (158, 163, 32),
+            (163, 38, 32),
+            (180, 42, 220),
+            (100, 150, 250),
+        ]
 
         self.frame = None
 
@@ -86,7 +94,7 @@ class FaceStreamer:
 
             # If the `q` key was pressed, break from the loop.
             if key == ord("q") or self.vs.stopped:
-                print('break')
+                print("break")
                 break
 
         self._end_stream()
@@ -112,8 +120,10 @@ class FaceStreamer:
         frame = imutils.resize(self.vs.read(), width=self.width)
         self.height, _, _ = frame.shape
         self.pose_estimator = PoseEstimator(img_size=(self.height, self.width))
-        self.pose_stabilizers = [Stabilizer(state_num=2, measure_num=1, cov_process=0.1, cov_measure=0.1)
-                                 for _ in range(6)]
+        self.pose_stabilizers = [
+            Stabilizer(state_num=2, measure_num=1, cov_process=0.1, cov_measure=0.1)
+            for _ in range(6)
+        ]
 
     def _process_frame(self):
         self._find_faces()
@@ -139,7 +149,8 @@ class FaceStreamer:
             rgb_triple = self._update_rgb()
             # Try pose estimation
             self.pose = self.pose_estimator.solve_pose_by_68_points(
-                self.shape.astype('float'))
+                self.shape.astype("float")
+            )
             # Stabilize the pose
             self._stablize_pose()
             # Update RPY values
@@ -153,15 +164,56 @@ class FaceStreamer:
     def _find_face_points(self):
 
         # Define custom ROI
-        custom_roi = [0,1,2,3,13,14,15,16,17,18,19,20,21,22,23,24,25,26,33]
-        avg_1 = np.asarray([np.mean([self.shape[3][0], self.shape[48][0]],dtype=np.int64), np.mean([self.shape[3][1],self.shape[48][1]],dtype=np.int64)])
-        avg_2 = np.asarray([np.mean([self.shape[13][0], self.shape[54][0]],dtype=np.int64), np.mean([self.shape[13][1],self.shape[54][1]])],dtype=np.int64)
+        custom_roi = [
+            0,
+            1,
+            2,
+            3,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            33,
+        ]
+        avg_1 = np.asarray(
+            [
+                np.mean([self.shape[3][0], self.shape[48][0]], dtype=np.int64),
+                np.mean([self.shape[3][1], self.shape[48][1]], dtype=np.int64),
+            ]
+        )
+        avg_2 = np.asarray(
+            [
+                np.mean([self.shape[13][0], self.shape[54][0]], dtype=np.int64),
+                np.mean([self.shape[13][1], self.shape[54][1]]),
+            ],
+            dtype=np.int64,
+        )
         points = [self.shape[i] for i in custom_roi]
         points.extend([avg_1, avg_2])
 
-        self.face_points = self.shape[self.facial_landmarks_ids['face'][0]:self.facial_landmarks_ids['face'][1]]
-        self.left_eye_points = self.shape[self.facial_landmarks_ids['left_eye'][0]:self.facial_landmarks_ids['left_eye'][1]]
-        self.right_eye_points = self.shape[self.facial_landmarks_ids['right_eye'][0]:self.facial_landmarks_ids['right_eye'][1]]
+        self.face_points = self.shape[
+            self.facial_landmarks_ids["face"][0] : self.facial_landmarks_ids["face"][1]
+        ]
+        self.left_eye_points = self.shape[
+            self.facial_landmarks_ids["left_eye"][0] : self.facial_landmarks_ids[
+                "left_eye"
+            ][1]
+        ]
+        self.right_eye_points = self.shape[
+            self.facial_landmarks_ids["right_eye"][0] : self.facial_landmarks_ids[
+                "right_eye"
+            ][1]
+        ]
         self.custom_points = np.asarray(points)
 
     def _apply_aam(self):
@@ -196,9 +248,9 @@ class FaceStreamer:
         self.num_aam_pixels = np.sum(self.custom_final_mask)
 
     def _update_rgb(self):
-        red = np.sum(self.aam[:,:,0])/ self.num_aam_pixels
-        green = np.sum(self.aam[:,:,1])/ self.num_aam_pixels
-        blue = np.sum(self.aam[:,:,2])/ self.num_aam_pixels
+        red = np.sum(self.aam[:, :, 0]) / self.num_aam_pixels
+        green = np.sum(self.aam[:, :, 1]) / self.num_aam_pixels
+        blue = np.sum(self.aam[:, :, 2]) / self.num_aam_pixels
 
         return red, green, blue
 
@@ -226,8 +278,13 @@ class FaceStreamer:
 
     def _draw_face_bb(self):
         # Draw the bounding box on the frame
-        cv2.rectangle(self.frame, (self.bX, self.bY),
-                      (self.bW+self.bX, self.bH+self.bY), (0, 255, 0), 1)
+        cv2.rectangle(
+            self.frame,
+            (self.bX, self.bY),
+            (self.bW + self.bX, self.bH + self.bY),
+            (0, 255, 0),
+            1,
+        )
 
     def _draw_landmarks(self):
         for (name, (i, j)) in self.facial_landmarks_ids.items():
@@ -243,19 +300,29 @@ class FaceStreamer:
         self.frame[self.custom_final_mask] = self.colors[0]
 
     def _draw_pose_axis(self):
-        self.pose_estimator.draw_axis(self.frame,
-                                      self.steady_pose[0], self.steady_pose[1])
+        self.pose_estimator.draw_axis(
+            self.frame, self.steady_pose[0], self.steady_pose[1]
+        )
 
 
 class SignalProcessor:
-
     def __init__(self):
         self.frames_in_window = 64
         self.red_window, self.green_window, self.blue_window = None, None, None
         self.roll_window, self.pitch_window, self.yaw_window = None, None, None
-        self.frame_timestamps_window, self.frame_ids_window, self.rgb_values_window, self.rpy_values_window = None, None, None, None
+        (
+            self.frame_timestamps_window,
+            self.frame_ids_window,
+            self.rgb_values_window,
+            self.rpy_values_window,
+        ) = (None, None, None, None)
         self.S_window, self.P_window, self.rppg_window = None, None, None
-        self.rppg_fft_window, self.roll_fft_window, self.yaw_fft_window, self.pitch_fft_window =  None, None, None, None
+        (
+            self.rppg_fft_window,
+            self.roll_fft_window,
+            self.yaw_fft_window,
+            self.pitch_fft_window,
+        ) = (None, None, None, None)
         self.combined_rpy_fft_window, self.rppg_fft_rmns_window = None, None
         self.rppg_filtered_window = None
 
@@ -270,7 +337,7 @@ class SignalProcessor:
 
     @staticmethod
     def normalize_signal(signal):
-        signal = signal/np.mean(signal)
+        signal = signal / np.mean(signal)
         return signal
 
     # Finds highest frequency in hz
@@ -287,14 +354,28 @@ class SignalProcessor:
             results = SignalProcessor.batch_get(self.frames_in_window)
 
             start = perf_counter()
-            print("Received "+str(self.frames_in_window)+ " at "+str(start))
+            print("Received " + str(self.frames_in_window) + " at " + str(start))
             self.process_window(results)
-            print("Processed "+str(self.frames_in_window)+ " in "+str(perf_counter()-start))
+            print(
+                "Processed "
+                + str(self.frames_in_window)
+                + " in "
+                + str(perf_counter() - start)
+            )
 
     def process_window(self, window):
-        self.frame_timestamps_window, self.frame_ids_window, self.rgb_values_window, self.rpy_values_window = zip(*window)
-        self.red_window, self.green_window, self.blue_window = zip(*self.rgb_values_window)
-        self.roll_window, self.pitch_window, self.yaw_window = zip(*self.rpy_values_window)
+        (
+            self.frame_timestamps_window,
+            self.frame_ids_window,
+            self.rgb_values_window,
+            self.rpy_values_window,
+        ) = zip(*window)
+        self.red_window, self.green_window, self.blue_window = zip(
+            *self.rgb_values_window
+        )
+        self.roll_window, self.pitch_window, self.yaw_window = zip(
+            *self.rpy_values_window
+        )
 
         self.apply_pos()
         self.apply_signal_filtering()
@@ -310,13 +391,13 @@ class SignalProcessor:
         mean_color = np.mean(mat, axis=1)
         diag_mean_color = np.diag(mean_color)
         diag_mean_color_inv = np.linalg.inv(diag_mean_color)
-        mat_n = np.matmul(diag_mean_color_inv,mat)
-        projection_matrix = np.array([[0,1,-1],[-2,1,1]])
-        self.S_window = np.matmul(projection_matrix,mat_n)
+        mat_n = np.matmul(diag_mean_color_inv, mat)
+        projection_matrix = np.array([[0, 1, -1], [-2, 1, 1]])
+        self.S_window = np.matmul(projection_matrix, mat_n)
 
-        std = np.array([1,np.std(self.S_window[0,:])/np.std(self.S_window[1,:])])
-        self.P_window = np.matmul(std,self.S_window)
-        self.rppg_window = self.P_window-np.mean(self.P_window)
+        std = np.array([1, np.std(self.S_window[0, :]) / np.std(self.S_window[1, :])])
+        self.P_window = np.matmul(std, self.S_window)
+        self.rppg_window = self.P_window - np.mean(self.P_window)
 
     def apply_signal_filtering(self):
         self.apply_rmns()
@@ -335,23 +416,25 @@ class SignalProcessor:
         self.yaw_fft_window = np.abs(fft(self.yaw_window))
 
         # Combine rpy_fft signals via averaging (divide by 3)
-        self.combined_rpy_fft_window = (self.roll_fft_window + self.pitch_fft_window + self.yaw_fft_window)/3
+        self.combined_rpy_fft_window = (
+            self.roll_fft_window + self.pitch_fft_window + self.yaw_fft_window
+        ) / 3
         self.rppg_fft_rmns_window = self.rppg_fft_window
 
     def apply_wnb_filter(self):
-        bandwidth = .2
+        bandwidth = 0.2
         nyq = 0.5 * 30
         # Find max freq
-        #max_freq = self.find_highest_freq(self.rppg_fft_rmns_window)
+        # max_freq = self.find_highest_freq(self.rppg_fft_rmns_window)
         # Make band
-        #freq_band = [(max_freq + i*bandwidth/2)/nyq for i in [-1, 1]]
+        # freq_band = [(max_freq + i*bandwidth/2)/nyq for i in [-1, 1]]
         #         print(freq_band)
         # Butterworth filter
-        #N = 5 # butterworth signal order
-        #b, a = butter(N, freq_band, btype='bandpass')
+        # N = 5 # butterworth signal order
+        # b, a = butter(N, freq_band, btype='bandpass')
         # use bandpass filter
-        self.rppg_filtered_window =self.rppg_fft_rmns_window
-        #self.rppg_filtered_window = lfilter(b, a, self.rppg_fft_rmns_window)
+        self.rppg_filtered_window = self.rppg_fft_rmns_window
+        # self.rppg_filtered_window = lfilter(b, a, self.rppg_fft_rmns_window)
 
     def apply_post_processing(self):
         pass
@@ -363,7 +446,7 @@ class SignalProcessor:
         self.rppg_len = len(self.rppg_zmean)"""
 
     def append_window_signals(self):
-        print('Appended window signals')
+        print("Appended window signals")
         # RGB signals
 
         for i in range(64):
@@ -394,15 +477,15 @@ class SignalProcessor:
 
 
 class SignalPlotter:
-
     def __init__(self):
         self.app = dash.Dash(__name__)
-        self.app.callback(Output('rppg-plotter', 'figure'),
-                          Output('rppg-filtered-plotter', 'figure'),
-                          Output('rgb-plotter', 'figure'),
-                          Output('rpy-plotter', 'figure'),
-                          Input('graph-update', 'n_intervals')
-                          )(self.update_graphs)
+        self.app.callback(
+            Output("rppg-plotter", "figure"),
+            Output("rppg-filtered-plotter", "figure"),
+            Output("rgb-plotter", "figure"),
+            Output("rpy-plotter", "figure"),
+            Input("graph-update", "n_intervals"),
+        )(self.update_graphs)
 
     @staticmethod
     def get_df():
@@ -416,64 +499,78 @@ class SignalPlotter:
         rppg_ = list(rppg.queue)
         rppg_filtered_ = list(rppg_filtered.queue)
 
-        cols = ['frame_id', 'red', 'green', 'blue', 'roll', 'pitch', 'yaw', 'rppg', 'rppg_filtered']
-        data = list(zip(x, red_, green_, blue_, roll_, pitch_, yaw_, rppg_, rppg_filtered_))
+        cols = [
+            "frame_id",
+            "red",
+            "green",
+            "blue",
+            "roll",
+            "pitch",
+            "yaw",
+            "rppg",
+            "rppg_filtered",
+        ]
+        data = list(
+            zip(x, red_, green_, blue_, roll_, pitch_, yaw_, rppg_, rppg_filtered_)
+        )
         df = pd.DataFrame(data, columns=cols)
         return df
 
     def update_graphs(self, n):
         df = self.get_df()
-        fig0 = px.scatter(df, x="frame_id", y='rppg',template="seaborn")
-        fig0.update_traces(mode='lines',showlegend=True)
-        fig1 = px.scatter(df, x="frame_id", y='rppg_filtered',template="seaborn")
-        fig1.update_traces(mode='lines',showlegend=True)
-        fig2 = px.scatter(df, x="frame_id", y=["red", "green", "blue"],template="seaborn", color_discrete_sequence=["red", "green", "blue"])
-        fig2.update_traces(mode='lines',showlegend=True)
-        fig3 = px.scatter(df, x="frame_id", y=["roll", "pitch", "yaw"],template="seaborn")
-        fig3.update_traces(mode='lines', showlegend=True)
+        fig0 = px.scatter(df, x="frame_id", y="rppg", template="seaborn")
+        fig0.update_traces(mode="lines", showlegend=True)
+        fig1 = px.scatter(df, x="frame_id", y="rppg_filtered", template="seaborn")
+        fig1.update_traces(mode="lines", showlegend=True)
+        fig2 = px.scatter(
+            df,
+            x="frame_id",
+            y=["red", "green", "blue"],
+            template="seaborn",
+            color_discrete_sequence=["red", "green", "blue"],
+        )
+        fig2.update_traces(mode="lines", showlegend=True)
+        fig3 = px.scatter(
+            df, x="frame_id", y=["roll", "pitch", "yaw"], template="seaborn"
+        )
+        fig3.update_traces(mode="lines", showlegend=True)
 
         return fig0, fig1, fig2, fig3
 
     def plot(self):
 
         df = self.get_df()
-        fig0 = px.scatter(df, x="frame_id", y='rppg',template="seaborn")
-        fig0.update_traces(mode='lines',showlegend=True)
-        fig1 = px.scatter(df, x="frame_id", y='rppg_filtered',template="seaborn")
-        fig1.update_traces(mode='lines',showlegend=True)
-        fig2 = px.scatter(df, x="frame_id", y=["red", "green", "blue"],template="seaborn", color_discrete_sequence=["red", "green", "blue"])
-        fig2.update_traces(mode='lines',showlegend=True)
-        fig3 = px.scatter(df, x="frame_id", y=["roll", "pitch", "yaw"],template="seaborn")
-        fig3.update_traces(mode='lines', showlegend=True)
+        fig0 = px.scatter(df, x="frame_id", y="rppg", template="seaborn")
+        fig0.update_traces(mode="lines", showlegend=True)
+        fig1 = px.scatter(df, x="frame_id", y="rppg_filtered", template="seaborn")
+        fig1.update_traces(mode="lines", showlegend=True)
+        fig2 = px.scatter(
+            df,
+            x="frame_id",
+            y=["red", "green", "blue"],
+            template="seaborn",
+            color_discrete_sequence=["red", "green", "blue"],
+        )
+        fig2.update_traces(mode="lines", showlegend=True)
+        fig3 = px.scatter(
+            df, x="frame_id", y=["roll", "pitch", "yaw"], template="seaborn"
+        )
+        fig3.update_traces(mode="lines", showlegend=True)
 
-        self.app.layout = html.Div(children=[
-            html.H2(children='Signal Plotter'),
-            html.H3(children='RPPG Signal'),
-            dcc.Graph(
-                id='rppg-plotter',
-                figure=fig0
-            ),
-            html.H3(children='RPPG Filtered Signal'),
-            dcc.Graph(
-                id='rppg-filtered-plotter',
-                figure=fig1
-            ),
-            html.H3(children='RGB Signal'),
-            dcc.Graph(
-                id='rgb-plotter',
-                figure=fig2
-            ),
-            html.H3(children='RPY Signal'),
-            dcc.Graph(
-                id='rpy-plotter',
-                figure=fig3
-            ),
-            dcc.Interval(
-                id='graph-update',
-                interval=1000,
-                n_intervals=0
-            ),
-        ])
+        self.app.layout = html.Div(
+            children=[
+                html.H2(children="Signal Plotter"),
+                html.H3(children="RPPG Signal"),
+                dcc.Graph(id="rppg-plotter", figure=fig0),
+                html.H3(children="RPPG Filtered Signal"),
+                dcc.Graph(id="rppg-filtered-plotter", figure=fig1),
+                html.H3(children="RGB Signal"),
+                dcc.Graph(id="rgb-plotter", figure=fig2),
+                html.H3(children="RPY Signal"),
+                dcc.Graph(id="rpy-plotter", figure=fig3),
+                dcc.Interval(id="graph-update", interval=1000, n_intervals=0),
+            ]
+        )
         self.app.run_server(debug=False)
 
 
@@ -502,4 +599,3 @@ if __name__ == "__main__":
     t1.start()
     t2.start()
     streamer()
-
