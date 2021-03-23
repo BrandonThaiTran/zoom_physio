@@ -72,9 +72,14 @@ class FaceStreamer:
 
         self.frame = None
 
+        # for overlap add
+        self.num_shifts = 0
+
     def stream(self):
 
         self._start_stream()
+
+        self.window_start_time = perf_counter()
 
         while True:
             self.frame = imutils.resize(self.vs.read(), width=self.width)
@@ -124,6 +129,10 @@ class FaceStreamer:
         self.rects = self.detector(self.gray, 0)
 
     def _loop_faces(self):
+
+        if len(self.rects) > 1:
+            raise ValueError("Too many faces")
+
         for rect in self.rects:
             # Get the bounding box
             (self.bX, self.bY, self.bW, self.bH) = face_utils.rect_to_bb(rect)
@@ -196,11 +205,11 @@ class FaceStreamer:
         self.num_aam_pixels = np.sum(self.custom_final_mask)
 
     def _update_rgb(self):
-        red = np.sum(self.aam[:,:,0])/ self.num_aam_pixels
-        green = np.sum(self.aam[:,:,1])/ self.num_aam_pixels
-        blue = np.sum(self.aam[:,:,2])/ self.num_aam_pixels
+        red_ = np.sum(self.aam[:,:,0])/ self.num_aam_pixels
+        green_ = np.sum(self.aam[:,:,1])/ self.num_aam_pixels
+        blue_ = np.sum(self.aam[:,:,2])/ self.num_aam_pixels
 
-        return red, green, blue
+        return red_, green_, blue_
 
     def _stablize_pose(self):
         self.steady_pose = []
@@ -211,11 +220,11 @@ class FaceStreamer:
         self.steady_pose = np.reshape(self.steady_pose, (-1, 3))
 
     def _update_rpy(self):
-        roll = self.steady_pose[0][2] * -1
-        pitch = self.steady_pose[0][1]
-        yaw = self.steady_pose[0][0]
+        roll_ = self.steady_pose[0][2] * -1
+        pitch_ = self.steady_pose[0][1]
+        yaw_ = self.steady_pose[0][0]
 
-        return (roll, pitch, yaw)
+        return roll_, pitch_, yaw_
 
     def _draw_frame(self):
 
@@ -250,7 +259,7 @@ class FaceStreamer:
 class SignalProcessor:
 
     def __init__(self):
-        self.frames_in_window = 64
+        self.frames_in_window = 256
         self.red_window, self.green_window, self.blue_window = None, None, None
         self.roll_window, self.pitch_window, self.yaw_window = None, None, None
         self.frame_timestamps_window, self.frame_ids_window, self.rgb_values_window, self.rpy_values_window = None, None, None, None
@@ -282,26 +291,30 @@ class SignalProcessor:
         return max_freq
 
     def process_data(self):
-
         while True:
             results = SignalProcessor.batch_get(self.frames_in_window)
 
             start = perf_counter()
             print("Received "+str(self.frames_in_window)+ " at "+str(start))
-            self.process_window(results)
+            self._process_window(results)
             print("Processed "+str(self.frames_in_window)+ " in "+str(perf_counter()-start))
 
-    def process_window(self, window):
+    def _process_window(self, window):
         self.frame_timestamps_window, self.frame_ids_window, self.rgb_values_window, self.rpy_values_window = zip(*window)
         self.red_window, self.green_window, self.blue_window = zip(*self.rgb_values_window)
         self.roll_window, self.pitch_window, self.yaw_window = zip(*self.rpy_values_window)
 
-        self.apply_pos()
-        self.apply_signal_filtering()
-        self.apply_post_processing()
-        self.append_window_signals()
+        self._resample()
+        self._apply_pos()
+        self._apply_signal_filtering()
+        self._apply_post_processing()
+        self._append_window_signals()
 
-    def apply_pos(self):
+    def _resample(self):
+        # to implement
+        pass
+
+    def _apply_pos(self):
         self.red_window = self.normalize_signal(self.red_window)
         self.green_window = self.normalize_signal(self.green_window)
         self.blue_window = self.normalize_signal(self.blue_window)
@@ -318,11 +331,11 @@ class SignalProcessor:
         self.P_window = np.matmul(std,self.S_window)
         self.rppg_window = self.P_window-np.mean(self.P_window)
 
-    def apply_signal_filtering(self):
-        self.apply_rmns()
-        self.apply_wnb_filter()
+    def _apply_signal_filtering(self):
+        self._apply_rmns()
+        self._apply_wnb_filter()
 
-    def apply_rmns(self):
+    def _apply_rmns(self):
         # Normalize RPY signals
         self.roll_window = self.normalize_signal(self.roll_window)
         self.pitch_window = self.normalize_signal(self.pitch_window)
@@ -336,24 +349,27 @@ class SignalProcessor:
 
         # Combine rpy_fft signals via averaging (divide by 3)
         self.combined_rpy_fft_window = (self.roll_fft_window + self.pitch_fft_window + self.yaw_fft_window)/3
+
+        # uncomment to get rmns
+        #self.rppg_fft_rmns_window = self.rppg_fft_window - self.combined_rpy_fft_window
         self.rppg_fft_rmns_window = self.rppg_fft_window
 
-    def apply_wnb_filter(self):
+    def _apply_wnb_filter(self):
         bandwidth = .2
-        nyq = 0.5 * 30
+        nyq = 0.5 * self.fps
         # Find max freq
-        #max_freq = self.find_highest_freq(self.rppg_fft_rmns_window)
+        max_freq = self.find_highest_freq(self.rppg_fft_rmns_window)
         # Make band
-        #freq_band = [(max_freq + i*bandwidth/2)/nyq for i in [-1, 1]]
+        freq_band = [(max_freq + i*bandwidth/2)/nyq for i in [-1, 1]]
         #         print(freq_band)
         # Butterworth filter
-        #N = 5 # butterworth signal order
-        #b, a = butter(N, freq_band, btype='bandpass')
+        N = 5 # butterworth signal order
+        b, a = butter(N, freq_band, btype='bandpass')
         # use bandpass filter
-        self.rppg_filtered_window =self.rppg_fft_rmns_window
-        #self.rppg_filtered_window = lfilter(b, a, self.rppg_fft_rmns_window)
+        self.rppg_filtered_window = lfilter(b, a, self.rppg_fft_rmns_window)
+        #         self.rppg_freq_filtered_window = np.abs(ifft(self.rppg_fft_rmns_window))
 
-    def apply_post_processing(self):
+    def _apply_post_processing(self):
         pass
         """self.rppg_zmean_window = (self.rppg_filtered_window - np.mean(self.rppg_filtered_window))/np.std(self.rppg_filtered_window)
         self.rppg_len = len(self.rppg_zmean)
@@ -362,11 +378,11 @@ class SignalProcessor:
         self.rppg_zmean.extend(self.rppg_zmean_window)
         self.rppg_len = len(self.rppg_zmean)"""
 
-    def append_window_signals(self):
+    def _append_window_signals(self):
         print('Appended window signals')
         # RGB signals
 
-        for i in range(64):
+        for i in range(self.frames_in_window):
             red.put(self.red_window[i])
             green.put(self.green_window[i])
             blue.put(self.blue_window[i])
@@ -436,15 +452,7 @@ class SignalPlotter:
 
     def plot(self):
 
-        df = self.get_df()
-        fig0 = px.scatter(df, x="frame_id", y='rppg',template="seaborn")
-        fig0.update_traces(mode='lines',showlegend=True)
-        fig1 = px.scatter(df, x="frame_id", y='rppg_filtered',template="seaborn")
-        fig1.update_traces(mode='lines',showlegend=True)
-        fig2 = px.scatter(df, x="frame_id", y=["red", "green", "blue"],template="seaborn", color_discrete_sequence=["red", "green", "blue"])
-        fig2.update_traces(mode='lines',showlegend=True)
-        fig3 = px.scatter(df, x="frame_id", y=["roll", "pitch", "yaw"],template="seaborn")
-        fig3.update_traces(mode='lines', showlegend=True)
+        fig0, fig1, fig2, fig3 = self.update_graphs()
 
         self.app.layout = html.Div(children=[
             html.H2(children='Signal Plotter'),
