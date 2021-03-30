@@ -43,6 +43,7 @@ rppg_fft = queue.Queue()
 combined_rpy_fft = queue.Queue()
 rppg_fft_rmns = queue.Queue()
 rppg_filtered = queue.Queue()
+rppg_zmean = queue.Queue()
 
 
 class FaceStreamer:
@@ -259,7 +260,8 @@ class FaceStreamer:
 class SignalProcessor:
 
     def __init__(self):
-        self.frames_in_window = 256
+        self.frames_in_window = 128
+        self.fps = 30
         self.red_window, self.green_window, self.blue_window = None, None, None
         self.roll_window, self.pitch_window, self.yaw_window = None, None, None
         self.frame_timestamps_window, self.frame_ids_window, self.rgb_values_window, self.rpy_values_window = None, None, None, None
@@ -267,6 +269,7 @@ class SignalProcessor:
         self.rppg_fft_window, self.roll_fft_window, self.yaw_fft_window, self.pitch_fft_window =  None, None, None, None
         self.combined_rpy_fft_window, self.rppg_fft_rmns_window = None, None
         self.rppg_filtered_window = None
+        self.rppg_zmean_window = None
 
     @staticmethod
     def batch_get(batch_size):
@@ -293,7 +296,6 @@ class SignalProcessor:
     def process_data(self):
         while True:
             results = SignalProcessor.batch_get(self.frames_in_window)
-
             start = perf_counter()
             print("Received "+str(self.frames_in_window)+ " at "+str(start))
             self._process_window(results)
@@ -311,8 +313,19 @@ class SignalProcessor:
         self._append_window_signals()
 
     def _resample(self):
-        # to implement
-        pass
+        frame_collected_vector = range(self.frames_in_window)
+        time_elapsed = self.frame_timestamps_window[-1]-self.frame_timestamps_window[0]
+        self.adj_frames_in_window = int(time_elapsed*self.fps)
+        frame_limit_vector = range(self.adj_frames_in_window)
+        # RGB
+        self.red_window = np.interp(frame_limit_vector, frame_collected_vector,self.red_window)
+        self.green_window = np.interp(frame_limit_vector, frame_collected_vector,self.green_window)
+        self.blue_window = np.interp(frame_limit_vector, frame_collected_vector,self.blue_window)
+
+        # RPY
+        self.roll_window = np.interp(frame_limit_vector, frame_collected_vector,self.roll_window)
+        self.pitch_window = np.interp(frame_limit_vector, frame_collected_vector,self.pitch_window)
+        self.yaw_window = np.interp(frame_limit_vector, frame_collected_vector,self.yaw_window)
 
     def _apply_pos(self):
         self.red_window = self.normalize_signal(self.red_window)
@@ -356,7 +369,7 @@ class SignalProcessor:
 
     def _apply_wnb_filter(self):
         bandwidth = .2
-        nyq = 0.5 * self.fps
+        nyq = 0.5 * 30
         # Find max freq
         max_freq = self.find_highest_freq(self.rppg_fft_rmns_window)
         # Make band
@@ -367,22 +380,19 @@ class SignalProcessor:
         b, a = butter(N, freq_band, btype='bandpass')
         # use bandpass filter
         self.rppg_filtered_window = lfilter(b, a, self.rppg_fft_rmns_window)
-        #         self.rppg_freq_filtered_window = np.abs(ifft(self.rppg_fft_rmns_window))
+        self.rppg_freq_filtered_window = np.abs(ifft(self.rppg_fft_rmns_window))
 
     def _apply_post_processing(self):
-        pass
-        """self.rppg_zmean_window = (self.rppg_filtered_window - np.mean(self.rppg_filtered_window))/np.std(self.rppg_filtered_window)
-        self.rppg_len = len(self.rppg_zmean)
-        l = 1
-        self.rppg_zmean = self.rppg_zmean[:-1*l]
-        self.rppg_zmean.extend(self.rppg_zmean_window)
-        self.rppg_len = len(self.rppg_zmean)"""
+        self.rppg_zmean_window = (self.rppg_filtered_window - np.mean(self.rppg_filtered_window))/np.std(self.rppg_filtered_window)
+        shift_val = 1
+        #take shift_val out of the queue
+        SignalProcessor.batch_get(shift_val)
 
     def _append_window_signals(self):
         print('Appended window signals')
         # RGB signals
 
-        for i in range(self.frames_in_window):
+        for i in range(self.adj_frames_in_window):
             red.put(self.red_window[i])
             green.put(self.green_window[i])
             blue.put(self.blue_window[i])
@@ -407,7 +417,48 @@ class SignalProcessor:
             rppg_fft_rmns.put(self.rppg_fft_rmns_window[i])
 
             rppg_filtered.put(self.rppg_filtered_window[i])
+            rppg_zmean.put(self.rppg_zmean_window[i])
 
+    def calculate_output(self):
+        # Find the peaks
+        detected_peak_idxs = find_peaks(self.rppg_zmean, distance = self.fps/2)[0]
+        self.time_vector = [frame * (1/self.fps) for frame in range(self.rppg_len)] # in seconds
+        self.peaks = [self.time_vector[detected_peak_idx] for detected_peak_idx in detected_peak_idxs]
+        # IBIs
+        self.IBIs = self.find_IBIs(self.peaks)
+        # hr and HRV
+        self.hr = self.find_hr(self.IBIs)
+        self.rmssd, self.sdnn = self.find_hrv(self.IBIs)
+
+    # Finds IBIs in seconds
+    def find_IBIs(self, peaks):
+        IBIs = []
+        for i in range(len(peaks)-1):
+            IBIs.append(peaks[i+1] - peaks[i])
+        return IBIs
+
+    def find_hr(self, IBIs):
+        IBI_mean = np.average(IBIs)
+        hr = 1/IBI_mean * 60
+        return hr
+
+    # TODO - multiply by 1000, not 100
+    def find_hrv(self, IBIs):
+        rmssd = self.find_rmssd(IBIs) * 100
+        sdnn = self.find_sdnn(IBIs) * 100
+        return rmssd, sdnn
+
+    def find_rmssd(self, IBIs):
+        N = len(IBIs)
+        ssd = 0
+        for i in range(N-1):
+            ssd += (IBIs[i+1] - IBIs[i])**2
+        rmssd = np.sqrt(ssd/(N-1))
+        return rmssd
+
+    def find_sdnn(self, IBIs):
+        sdnn = np.std(IBIs)
+        return sdnn
 
 class SignalPlotter:
 
@@ -417,6 +468,7 @@ class SignalPlotter:
                           Output('rppg-filtered-plotter', 'figure'),
                           Output('rgb-plotter', 'figure'),
                           Output('rpy-plotter', 'figure'),
+                          Output('rppg-zmean-plotter', 'figure'),
                           Input('graph-update', 'n_intervals')
                           )(self.update_graphs)
 
@@ -431,28 +483,37 @@ class SignalPlotter:
         yaw_ = list(yaw.queue)
         rppg_ = list(rppg.queue)
         rppg_filtered_ = list(rppg_filtered.queue)
+        rppg_zmean_ = list(rppg_zmean.queue)
+        x_zmean = list(range(len(rppg_zmean_)))
 
         cols = ['frame_id', 'red', 'green', 'blue', 'roll', 'pitch', 'yaw', 'rppg', 'rppg_filtered']
         data = list(zip(x, red_, green_, blue_, roll_, pitch_, yaw_, rppg_, rppg_filtered_))
         df = pd.DataFrame(data, columns=cols)
-        return df
+
+        cols1 = ['frame_id', 'rppg_zmean']
+        data1 = list(zip(x_zmean, rppg_zmean_))
+        df1 = pd.DataFrame(data1, columns=cols1)
+
+        return df, df1
 
     def update_graphs(self, n):
-        df = self.get_df()
-        fig0 = px.scatter(df, x="frame_id", y='rppg',template="seaborn")
+        df, df1 = self.get_df()
+        fig0 = px.scatter(df, x="frame_id", y=['rppg'],template="seaborn")
         fig0.update_traces(mode='lines',showlegend=True)
-        fig1 = px.scatter(df, x="frame_id", y='rppg_filtered',template="seaborn")
+        fig1 = px.scatter(df, x="frame_id", y=['rppg_filtered'],template="seaborn")
         fig1.update_traces(mode='lines',showlegend=True)
         fig2 = px.scatter(df, x="frame_id", y=["red", "green", "blue"],template="seaborn", color_discrete_sequence=["red", "green", "blue"])
         fig2.update_traces(mode='lines',showlegend=True)
         fig3 = px.scatter(df, x="frame_id", y=["roll", "pitch", "yaw"],template="seaborn")
         fig3.update_traces(mode='lines', showlegend=True)
+        fig4 = px.scatter(df1, x="frame_id", y=["rppg_zmean"],template="seaborn")
+        fig4.update_traces(mode='lines', showlegend=True)
 
-        return fig0, fig1, fig2, fig3
+        return fig0, fig1, fig2, fig3, fig4
 
     def plot(self):
 
-        fig0, fig1, fig2, fig3 = self.update_graphs()
+        fig0, fig1, fig2, fig3, fig4 = self.update_graphs(0)
 
         self.app.layout = html.Div(children=[
             html.H2(children='Signal Plotter'),
@@ -475,6 +536,11 @@ class SignalPlotter:
             dcc.Graph(
                 id='rpy-plotter',
                 figure=fig3
+            ),
+            html.H3(children='RPPG z-mean Signal'),
+            dcc.Graph(
+                id='rppg-zmean-plotter',
+                figure=fig4
             ),
             dcc.Interval(
                 id='graph-update',
