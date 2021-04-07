@@ -1,2 +1,5 @@
 detect-face-parts/
 nbs/.ipynb_checkpoints/
+.ipynb_checkpoints/
+multi_threaded_system/.ipynb_checkpoints/
+nbs/__pycache__/
