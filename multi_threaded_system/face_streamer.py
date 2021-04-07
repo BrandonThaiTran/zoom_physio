@@ -18,20 +18,20 @@ from matplotlib import style
 from multiprocessing import Process, Manager
 from dash.dependencies import Input, Output
 
-
 import dash
 import dash_core_components as dcc
 import dash_html_components as html
 import plotly.express as px
 import pandas as pd
 
-frame_info = queue.Queue()
+frame_info = queue.Queue()  # timestamp, frame_id, RGB, RPY
 red = queue.Queue()
 green = queue.Queue()
 blue = queue.Queue()
 roll = queue.Queue()
 pitch = queue.Queue()
 yaw = queue.Queue()
+# POS
 S1 = queue.Queue()
 S2 = queue.Queue()
 P = queue.Queue()
@@ -47,7 +47,44 @@ rppg_zmean = queue.Queue()
 
 
 class FaceStreamer:
-    def __init__(self, predictor_path, filename=None):
+    """
+    Streams and send video data.
+
+    ...
+
+    Attributes
+    ----------
+    predictor_path : str
+        a string denoting the path of the predictor model
+    filename : str
+        a string denoting the path of the video file. Leave as none if using
+        webcam
+    display_* : bool
+        parameters indicating what to display on the frame 
+
+    Methods
+    -------
+    stream()
+        streams the data 
+        
+    _process_frame()
+        detects faces and extracts values to be processed         
+    _find_faces()
+        detects faces
+    _loop_faces()
+        finds facial landmarks, applies aam, stablizes the pose, and updates 
+        RGB and RPY values
+    _find_face_points()
+        finds facial landmarks for empirically determined ROI
+    _apply_aam()
+        applies the active appearance mask that is used to extract RGB values
+        
+    """
+    def __init__(self, predictor_path, filename=None,
+                 display_face_bb = False, 
+                 display_landmarks = False, display_aam = False, 
+                 display_pose_unstable = False, display_pose_stable = False,
+                 display_pose_axis = False):
 
         self.filename = filename
 
@@ -83,7 +120,7 @@ class FaceStreamer:
 
         # for overlap add
         self.num_shifts = 0
-
+            
     def stream(self):
 
         self._start_stream()
@@ -153,17 +190,12 @@ class FaceStreamer:
             self.shape = face_utils.shape_to_np(self.predictor(self.gray, rect))
             # Set the facial points for the roi
             self._find_face_points()
-            # Apply the aam
             self._apply_aam()
-            # Get RGB values
             rgb_triple = self._update_rgb()
-            # Try pose estimation
             self.pose = self.pose_estimator.solve_pose_by_68_points(
                 self.shape.astype("float")
             )
-            # Stabilize the pose
             self._stablize_pose()
-            # Update RPY values
             rpy_triple = self._update_rpy()
 
             # If a face is found, draw on the face
@@ -212,17 +244,16 @@ class FaceStreamer:
         points.extend([avg_1, avg_2])
 
         self.face_points = self.shape[
-            self.facial_landmarks_ids["face"][0] : self.facial_landmarks_ids["face"][1]
+            self.facial_landmarks_ids["face"][0] : 
+            self.facial_landmarks_ids["face"][1]
         ]
         self.left_eye_points = self.shape[
-            self.facial_landmarks_ids["left_eye"][0] : self.facial_landmarks_ids[
-                "left_eye"
-            ][1]
+            self.facial_landmarks_ids["left_eye"][0] : 
+            self.facial_landmarks_ids["left_eye"][1]
         ]
         self.right_eye_points = self.shape[
-            self.facial_landmarks_ids["right_eye"][0] : self.facial_landmarks_ids[
-                "right_eye"
-            ][1]
+            self.facial_landmarks_ids["right_eye"][0] : 
+            self.facial_landmarks_ids["right_eye"][1]
         ]
         self.custom_points = np.asarray(points)
 
@@ -258,9 +289,9 @@ class FaceStreamer:
         self.num_aam_pixels = np.sum(self.custom_final_mask)
 
     def _update_rgb(self):
-        red_ = np.sum(self.aam[:,:,0])/ self.num_aam_pixels
-        green_ = np.sum(self.aam[:,:,1])/ self.num_aam_pixels
-        blue_ = np.sum(self.aam[:,:,2])/ self.num_aam_pixels
+        red_ = np.sum(self.aam[:, :, 0]) / self.num_aam_pixels
+        green_ = np.sum(self.aam[:, :, 1]) / self.num_aam_pixels
+        blue_ = np.sum(self.aam[:, :, 2]) / self.num_aam_pixels
 
         return red_, green_, blue_
 
@@ -280,12 +311,23 @@ class FaceStreamer:
         return roll_, pitch_, yaw_
 
     def _draw_frame(self):
-
-        self._draw_overlay()
-        self._draw_face_bb()
-        self._draw_landmarks()
-        self._draw_pose_axis()
-
+        if self.display_aam:
+            self._draw_aam()
+        if self.display_face_bb:
+            self._draw_face_bb()
+        if self.display_landmarks:
+            self._draw_landmarks()
+        if self.display_pose_unstable or self.display_pose_stable:
+            self._draw_pose()
+        if self.display_pose_axis:
+            self._draw_pose_axis()
+            
+    def _draw_aam(self, alpha=0.75):
+        # Apply the transparent overlay
+        #         cv2.addWeighted(self.aam, alpha, self.frame, 1 - alpha, 0,self.frame)
+        # apply a color
+        self.frame[self.custom_final_mask] = self.colors[0]
+            
     def _draw_face_bb(self):
         # Draw the bounding box on the frame
         cv2.rectangle(
@@ -301,13 +343,18 @@ class FaceStreamer:
             # Loop over the subset of facial landmarks, drawing the specific face part
             for (x, y) in self.shape[i:j]:
                 cv2.circle(self.frame, (x, y), 1, (0, 0, 255), -1)
-
-    # Displays the overlay of the landmarks
-    def _draw_overlay(self, alpha=0.75):
-        # Apply the transparent overlay
-        #         cv2.addWeighted(self.aam, alpha, self.frame, 1 - alpha, 0,self.frame)
-        # apply a color
-        self.frame[self.custom_final_mask] = self.colors[0]
+        
+    def _draw_pose(self):
+        # Display the initial pose annotation if true
+        if self.display_pose_unstable:
+            self.pose_estimator.draw_annotation_box(
+                self.frame, self.pose[0], self.pose[1], 
+                color=(255, 128, 128))
+        # Display the stablized pose annotation if true
+        if self.display_pose_stable:
+            self.pose_estimator.draw_annotation_box(
+                self.frame, self.steady_pose[0], self.steady_pose[1], 
+                color=(128, 255, 128))
 
     def _draw_pose_axis(self):
         self.pose_estimator.draw_axis(
@@ -316,6 +363,69 @@ class FaceStreamer:
 
 
 class SignalProcessor:
+    """
+    A class used to process the signals
+    ...
+    Attributes
+    ----------
+    frame_in_window: int
+        the number of frames processed per window
+    fps: int
+        the desired frame sampling rate
+    red_window, green_window, blue_window: list
+        lists of the rgb values in the window
+    roll_window, pitch_window, yaw_window: list
+        lists of the rpy values in the window
+    S_window, P_window: list
+        lists of POS information
+    combined_rpy_fft_window: list
+        list of the rpy fft information
+    rppg_window, rppg_fft_rmns_window: list
+        lists of rppg information
+    rppg_filtered_window: list
+        list of filtered rppg signal
+    rppg_zmean_window: list
+        list of zmean adjusted rppg signal
+        
+    Methods
+    -------
+    _batch_get(queue, batch_size)
+        get a number of elements out of a thread safe Queue object
+    normalize_signal(signal)
+        normalize signal by dividing by its mean
+    find_strongest_freq(signal)
+        get the frequency of the strongest power signal
+    process_data()
+        run a loop that waits until it collects some batch of data
+        and process the data
+    _process_window()
+        extract the data and run _resample(), _apply_pos(),
+        _apply_signal_filtering(), _apply_post_processing(),
+        _append_window_signals() on the data
+    _resample()
+        resample the data according to the desired frame rate
+        specified in the initialization
+    _apply_pos()
+        apply plane-orthogonal-to-skin to the data in order to
+        correct for the rppg signal
+    _apply_signal_filtering()
+        apply rhythmic noise suppression to account for head movement
+         and a wide-narrow band filter to the data
+    _apply_post_processing()
+        extract the zmean adjusted rppg signal and overlap the
+        signal before appending the window
+    _append_window_signals()
+        append all the window signals to the queues with all the
+        collected and processed data
+    _apply_rmns()
+        account for head movements by subtracting the rpy_fft signal
+        from the rppg_fft and recovering back the signal
+    _apply_wnb_filter()
+        apply a wide-narrow band filter to remove noise
+    _append_window_signals()
+        after all the processing tasks have completed, append the
+        proccessed data to the respective thread safe queues
+    """
     def __init__(self):
         self.frames_in_window = 128
         self.fps = 30
@@ -326,7 +436,7 @@ class SignalProcessor:
             self.frame_ids_window,
             self.rgb_values_window,
             self.rpy_values_window,
-        ) = (None, None, None, None)
+        ) = (None, None, None, None) 
         self.S_window, self.P_window, self.rppg_window = None, None, None
         (
             self.rppg_fft_window,
@@ -339,7 +449,7 @@ class SignalProcessor:
         self.rppg_zmean_window = None
 
     @staticmethod
-    def batch_get(q, batch_size):
+    def _batch_get(q, batch_size):
 
         results = []
         for i in range(batch_size):
@@ -352,18 +462,18 @@ class SignalProcessor:
         signal = signal / np.mean(signal)
         return signal
 
-    # Finds highest frequency in hz
+    # Finds strongest frequency in hz
     @staticmethod
-    def find_highest_freq(signal):
+    def find_strongest_freq(signal):
         freq = fftfreq(len(signal))
-        power = np.abs(fft(signal))**2
+        power = np.abs(fft(signal)) ** 2
         mask = np.where(freq > 0)
         freqs = freq[mask]
         return freqs[power[mask].argmax()]
 
     def process_data(self):
         while True:
-            results = SignalProcessor.batch_get(frame_info, self.frames_in_window)
+            results = SignalProcessor._batch_get(frame_info, self.frames_in_window)
             start = perf_counter()
             print("Received " + str(self.frames_in_window) + " at " + str(start))
             self._process_window(results)
@@ -396,18 +506,34 @@ class SignalProcessor:
 
     def _resample(self):
         frame_collected_vector = range(self.frames_in_window)
-        time_elapsed = self.frame_timestamps_window[-1]-self.frame_timestamps_window[0]
-        self.adj_frames_in_window = len(frame_collected_vector)#int(time_elapsed*self.fps)
+        time_elapsed = (
+            self.frame_timestamps_window[-1] - self.frame_timestamps_window[0]
+        )
+        self.adj_frames_in_window = len(
+            frame_collected_vector
+        )  # int(time_elapsed*self.fps)
         frame_limit_vector = range(self.adj_frames_in_window)
         # RGB
-        self.red_window = np.interp(frame_limit_vector, frame_collected_vector,self.red_window)
-        self.green_window = np.interp(frame_limit_vector, frame_collected_vector,self.green_window)
-        self.blue_window = np.interp(frame_limit_vector, frame_collected_vector,self.blue_window)
+        self.red_window = np.interp(
+            frame_limit_vector, frame_collected_vector, self.red_window
+        )
+        self.green_window = np.interp(
+            frame_limit_vector, frame_collected_vector, self.green_window
+        )
+        self.blue_window = np.interp(
+            frame_limit_vector, frame_collected_vector, self.blue_window
+        )
 
         # RPY
-        self.roll_window = np.interp(frame_limit_vector, frame_collected_vector,self.roll_window)
-        self.pitch_window = np.interp(frame_limit_vector, frame_collected_vector,self.pitch_window)
-        self.yaw_window = np.interp(frame_limit_vector, frame_collected_vector,self.yaw_window)
+        self.roll_window = np.interp(
+            frame_limit_vector, frame_collected_vector, self.roll_window
+        )
+        self.pitch_window = np.interp(
+            frame_limit_vector, frame_collected_vector, self.pitch_window
+        )
+        self.yaw_window = np.interp(
+            frame_limit_vector, frame_collected_vector, self.yaw_window
+        )
 
     def _apply_pos(self):
         self.red_window = self.normalize_signal(self.red_window)
@@ -443,18 +569,21 @@ class SignalProcessor:
         self.yaw_fft_window = np.abs(fft(self.yaw_window))
 
         # Combine rpy_fft signals via averaging (divide by 3)
-        self.combined_rpy_fft_window = (self.roll_fft_window + self.pitch_fft_window + self.yaw_fft_window) / 3
-        self.rppg_fft_rmns_window = self.rppg_fft_window #- self.combined_rpy_fft_window
+        self.combined_rpy_fft_window = (
+            self.roll_fft_window + self.pitch_fft_window + self.yaw_fft_window
+        ) / 3
+        self.rppg_fft_rmns_window = (
+            self.rppg_fft_window
+        )  # - self.combined_rpy_fft_window
 
         self.rppg_filtered_window = np.abs(ifft(self.rppg_fft_rmns_window))
 
     def _apply_wnb_filter(self):
 
-        rppg_filter_freq = fftfreq(len(self.rppg_filtered_window), d=1.0/30)
+        rppg_filter_freq = fftfreq(len(self.rppg_filtered_window), d=1.0 / 30)
         rppg_filter_fft = fft(self.rppg_filtered_window)
-        rppg_filter_fft[(4 < np.abs(rppg_filter_freq))] = 0 # cut signal above 4Hz
-        rppg_filter_fft[(.7 > np.abs(rppg_filter_freq))] = 0 # cut signal below 4Hz
-
+        rppg_filter_fft[(4 < np.abs(rppg_filter_freq))] = 0  # cut signal above 4Hz
+        rppg_filter_fft[(0.7 > np.abs(rppg_filter_freq))] = 0  # cut signal below 4Hz
 
         self.rppg_filtered_window = np.abs(ifft(rppg_filter_fft))
         """bandwidth = .2
@@ -474,14 +603,16 @@ class SignalProcessor:
         self.rppg_freq_filtered_window = np.abs(ifft(self.rppg_fft_rmns_window))"""
 
     def _apply_post_processing(self):
-        self.rppg_zmean_window = (self.rppg_filtered_window - np.mean(self.rppg_filtered_window))/np.std(self.rppg_filtered_window)
+        self.rppg_zmean_window = (
+            self.rppg_filtered_window - np.mean(self.rppg_filtered_window)
+        ) / np.std(self.rppg_filtered_window)
         shift_val = 1
-        #take shift_val out of the queue
+        # take shift_val out of the queue
         if len(list(rppg_zmean.queue)) > 0:
-            SignalProcessor.batch_get(rppg_zmean, shift_val)
+            SignalProcessor._batch_get(rppg_zmean, shift_val)
 
     def _append_window_signals(self):
-        print('Appended window signals')
+        print("Appended window signals")
         # RGB signals
 
         for i in range(self.adj_frames_in_window):
@@ -511,11 +642,16 @@ class SignalProcessor:
             rppg_filtered.put(self.rppg_filtered_window[i])
             rppg_zmean.put(self.rppg_zmean_window[i])
 
-    def calculate_output(self):
+    def _calculate_output(self):
         # Find the peaks
-        detected_peak_idxs = find_peaks(self.rppg_zmean, distance = self.fps/2)[0]
-        self.time_vector = [frame * (1/self.fps) for frame in range(self.rppg_len)] # in seconds
-        self.peaks = [self.time_vector[detected_peak_idx] for detected_peak_idx in detected_peak_idxs]
+        detected_peak_idxs = find_peaks(self.rppg_zmean, distance=self.fps / 2)[0]
+        self.time_vector = [
+            frame * (1 / self.fps) for frame in range(self.rppg_len)
+        ]  # in seconds
+        self.peaks = [
+            self.time_vector[detected_peak_idx]
+            for detected_peak_idx in detected_peak_idxs
+        ]
         # IBIs
         self.IBIs = self._find_IBIs(self.peaks)
         # hr and HRV
@@ -525,13 +661,13 @@ class SignalProcessor:
     # Finds IBIs in seconds
     def _find_IBIs(self, peaks):
         IBIs = []
-        for i in range(len(peaks)-1):
-            IBIs.append(peaks[i+1] - peaks[i])
+        for i in range(len(peaks) - 1):
+            IBIs.append(peaks[i + 1] - peaks[i])
         return IBIs
 
     def _find_hr(self, IBIs):
         IBI_mean = np.average(IBIs)
-        hr = 1/IBI_mean * 60
+        hr = 1 / IBI_mean * 60
         return hr
 
     # TODO - multiply by 1000, not 100
@@ -543,26 +679,46 @@ class SignalProcessor:
     def _find_rmssd(self, IBIs):
         N = len(IBIs)
         ssd = 0
-        for i in range(N-1):
-            ssd += (IBIs[i+1] - IBIs[i])**2
-        rmssd = np.sqrt(ssd/(N-1))
+        for i in range(N - 1):
+            ssd += (IBIs[i + 1] - IBIs[i]) ** 2
+        rmssd = np.sqrt(ssd / (N - 1))
         return rmssd
 
     def _find_sdnn(self, IBIs):
         sdnn = np.std(IBIs)
         return sdnn
 
+
 class SignalPlotter:
+    """ Plots data received on web-hosted dashboard
+    
+    ... 
+    
+    Attributes 
+    ---------- 
+    app : Dash app dash app used to show plotted data 
+    
+    Methods 
+    ------- 
+    get_df() 
+        creates dataframe from pre-existing queues of data 
+    update_graphs() 
+        updates graphs based upon current dataframe 
+    plot() 
+        updates plotted graphs on Dash app 
+        
+    """ 
     def __init__(self):
         self.app = dash.Dash(__name__)
 
-        self.app.callback(Output('rppg-plotter', 'figure'),
-                          Output('rppg-filtered-plotter', 'figure'),
-                          Output('rgb-plotter', 'figure'),
-                          Output('rpy-plotter', 'figure'),
-                          Output('rppg-zmean-plotter', 'figure'),
-                          Input('graph-update', 'n_intervals')
-                          )(self.update_graphs)
+        self.app.callback(
+            Output("rppg-plotter", "figure"),
+            Output("rppg-filtered-plotter", "figure"),
+            Output("rgb-plotter", "figure"),
+            Output("rpy-plotter", "figure"),
+            Output("rppg-zmean-plotter", "figure"),
+            Input("graph-update", "n_intervals"),
+        )(self.update_graphs)
 
     @staticmethod
     def get_df():
@@ -594,7 +750,7 @@ class SignalPlotter:
         )
         df = pd.DataFrame(data, columns=cols)
 
-        cols1 = ['frame_id', 'rppg_zmean']
+        cols1 = ["frame_id", "rppg_zmean"]
         data1 = list(zip(x_zmean, rppg_zmean_))
         df1 = pd.DataFrame(data1, columns=cols1)
 
@@ -602,17 +758,24 @@ class SignalPlotter:
 
     def update_graphs(self, n):
         df, df1 = self.get_df()
-        fig0 = px.scatter(df, x="frame_id", y=['rppg'],template="seaborn")
-        fig0.update_traces(mode='lines',showlegend=True)
-        fig1 = px.scatter(df, x="frame_id", y=['rppg_filtered'],template="seaborn")
-        fig1.update_traces(mode='lines',showlegend=True)
-        fig2 = px.scatter(df, x="frame_id", y=["red", "green", "blue"],template="seaborn", color_discrete_sequence=["red", "green", "blue"])
-        fig2.update_traces(mode='lines',showlegend=True)
-        fig3 = px.scatter(df, x="frame_id", y=["roll", "pitch", "yaw"],template="seaborn")
-        fig3.update_traces(mode='lines', showlegend=True)
-        fig4 = px.scatter(df1, x="frame_id", y=["rppg_zmean"],template="seaborn")
-        fig4.update_traces(mode='lines', showlegend=True)
-
+        fig0 = px.scatter(df, x="frame_id", y=["rppg"], template="seaborn")
+        fig0.update_traces(mode="lines", showlegend=True)
+        fig1 = px.scatter(df, x="frame_id", y=["rppg_filtered"], template="seaborn")
+        fig1.update_traces(mode="lines", showlegend=True)
+        fig2 = px.scatter(
+            df,
+            x="frame_id",
+            y=["red", "green", "blue"],
+            template="seaborn",
+            color_discrete_sequence=["red", "green", "blue"],
+        )
+        fig2.update_traces(mode="lines", showlegend=True)
+        fig3 = px.scatter(
+            df, x="frame_id", y=["roll", "pitch", "yaw"], template="seaborn"
+        )
+        fig3.update_traces(mode="lines", showlegend=True)
+        fig4 = px.scatter(df1, x="frame_id", y=["rppg_zmean"], template="seaborn")
+        fig4.update_traces(mode="lines", showlegend=True)
 
         return fig0, fig1, fig2, fig3, fig4
 
@@ -620,39 +783,22 @@ class SignalPlotter:
 
         fig0, fig1, fig2, fig3, fig4 = self.update_graphs(0)
 
-        self.app.layout = html.Div(children=[
-            html.H2(children='Signal Plotter'),
-            html.H3(children='RPPG Signal'),
-            dcc.Graph(
-                id='rppg-plotter',
-                figure=fig0
-            ),
-            html.H3(children='RPPG Filtered Signal'),
-            dcc.Graph(
-                id='rppg-filtered-plotter',
-                figure=fig1
-            ),
-            html.H3(children='RGB Signal'),
-            dcc.Graph(
-                id='rgb-plotter',
-                figure=fig2
-            ),
-            html.H3(children='RPY Signal'),
-            dcc.Graph(
-                id='rpy-plotter',
-                figure=fig3
-            ),
-            html.H3(children='RPPG z-mean Signal'),
-            dcc.Graph(
-                id='rppg-zmean-plotter',
-                figure=fig4
-            ),
-            dcc.Interval(
-                id='graph-update',
-                interval=1000,
-                n_intervals=0
-            ),
-        ])
+        self.app.layout = html.Div(
+            children=[
+                html.H2(children="Signal Plotter"),
+                html.H3(children="RPPG Signal"),
+                dcc.Graph(id="rppg-plotter", figure=fig0),
+                html.H3(children="RPPG Filtered Signal"),
+                dcc.Graph(id="rppg-filtered-plotter", figure=fig1),
+                html.H3(children="RGB Signal"),
+                dcc.Graph(id="rgb-plotter", figure=fig2),
+                html.H3(children="RPY Signal"),
+                dcc.Graph(id="rpy-plotter", figure=fig3),
+                html.H3(children="RPPG z-mean Signal"),
+                dcc.Graph(id="rppg-zmean-plotter", figure=fig4),
+                dcc.Interval(id="graph-update", interval=1000, n_intervals=0),
+            ]
+        )
         self.app.run_server(debug=False)
 
 
