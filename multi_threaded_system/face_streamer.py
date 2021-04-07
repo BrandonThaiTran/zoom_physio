@@ -339,11 +339,11 @@ class SignalProcessor:
         self.rppg_zmean_window = None
 
     @staticmethod
-    def batch_get(batch_size):
+    def batch_get(q, batch_size):
 
         results = []
         for i in range(batch_size):
-            results.append(frame_info.get(block=True))
+            results.append(q.get(block=True))
 
         return results
 
@@ -355,14 +355,15 @@ class SignalProcessor:
     # Finds highest frequency in hz
     @staticmethod
     def find_highest_freq(signal):
-        freq_hz = abs(fftfreq(signal.shape[0]) * 30)
-        max_idx = np.argmax(signal)
-        max_freq = freq_hz[max_idx]
-        return max_freq
+        freq = fftfreq(len(signal))
+        power = np.abs(fft(signal))**2
+        mask = np.where(freq > 0)
+        freqs = freq[mask]
+        return freqs[power[mask].argmax()]
 
     def process_data(self):
         while True:
-            results = SignalProcessor.batch_get(self.frames_in_window)
+            results = SignalProcessor.batch_get(frame_info, self.frames_in_window)
             start = perf_counter()
             print("Received " + str(self.frames_in_window) + " at " + str(start))
             self._process_window(results)
@@ -396,7 +397,7 @@ class SignalProcessor:
     def _resample(self):
         frame_collected_vector = range(self.frames_in_window)
         time_elapsed = self.frame_timestamps_window[-1]-self.frame_timestamps_window[0]
-        self.adj_frames_in_window = int(time_elapsed*self.fps)
+        self.adj_frames_in_window = len(frame_collected_vector)#int(time_elapsed*self.fps)
         frame_limit_vector = range(self.adj_frames_in_window)
         # RGB
         self.red_window = np.interp(frame_limit_vector, frame_collected_vector,self.red_window)
@@ -443,49 +444,41 @@ class SignalProcessor:
 
         # Combine rpy_fft signals via averaging (divide by 3)
         self.combined_rpy_fft_window = (self.roll_fft_window + self.pitch_fft_window + self.yaw_fft_window) / 3
-        self.rppg_fft_rmns_window = self.rppg_fft_window
+        self.rppg_fft_rmns_window = self.rppg_fft_window #- self.combined_rpy_fft_window
 
-    def apply_wnb_filter(self):
-        bandwidth = 0.2
-        nyq = 0.5 * 30
-        # Find max freq
-        # max_freq = self.find_highest_freq(self.rppg_fft_rmns_window)
-        # Make band
-        # freq_band = [(max_freq + i*bandwidth/2)/nyq for i in [-1, 1]]
-        #         print(freq_band)
-        # Butterworth filter
-        # N = 5 # butterworth signal order
-        # b, a = butter(N, freq_band, btype='bandpass')
-        # use bandpass filter
-        self.rppg_filtered_window = self.rppg_fft_rmns_window
-        # self.rppg_filtered_window = lfilter(b, a, self.rppg_fft_rmns_window)
-        self.combined_rpy_fft_window = (self.roll_fft_window + self.pitch_fft_window + self.yaw_fft_window)/3
-
-        # uncomment to get rmns
-        #self.rppg_fft_rmns_window = self.rppg_fft_window - self.combined_rpy_fft_window
-        self.rppg_fft_rmns_window = self.rppg_fft_window
+        self.rppg_filtered_window = np.abs(ifft(self.rppg_fft_rmns_window))
 
     def _apply_wnb_filter(self):
-        bandwidth = .2
+
+        rppg_filter_freq = fftfreq(len(self.rppg_filtered_window), d=1.0/30)
+        rppg_filter_fft = fft(self.rppg_filtered_window)
+        rppg_filter_fft[(4 < np.abs(rppg_filter_freq))] = 0 # cut signal above 4Hz
+        rppg_filter_fft[(.7 > np.abs(rppg_filter_freq))] = 0 # cut signal below 4Hz
+
+
+        self.rppg_filtered_window = np.abs(ifft(rppg_filter_fft))
+        """bandwidth = .2
         nyq = 0.5 * 30
+
         # Find max freq
-        max_freq = self.find_highest_freq(self.rppg_fft_rmns_window)
+        max_freq = self.find_highest_freq(self.rppg_filtered_window)
+
         # Make band
         freq_band = [(max_freq + i*bandwidth/2)/nyq for i in [-1, 1]]
-        #         print(freq_band)
+
         # Butterworth filter
         N = 5 # butterworth signal order
         b, a = butter(N, freq_band, btype='bandpass')
         # use bandpass filter
         self.rppg_filtered_window = lfilter(b, a, self.rppg_fft_rmns_window)
-        self.rppg_freq_filtered_window = np.abs(ifft(self.rppg_fft_rmns_window))
-
+        self.rppg_freq_filtered_window = np.abs(ifft(self.rppg_fft_rmns_window))"""
 
     def _apply_post_processing(self):
         self.rppg_zmean_window = (self.rppg_filtered_window - np.mean(self.rppg_filtered_window))/np.std(self.rppg_filtered_window)
         shift_val = 1
         #take shift_val out of the queue
-        SignalProcessor.batch_get(shift_val)
+        if len(list(rppg_zmean.queue)) > 0:
+            SignalProcessor.batch_get(rppg_zmean, shift_val)
 
     def _append_window_signals(self):
         print('Appended window signals')
@@ -524,30 +517,30 @@ class SignalProcessor:
         self.time_vector = [frame * (1/self.fps) for frame in range(self.rppg_len)] # in seconds
         self.peaks = [self.time_vector[detected_peak_idx] for detected_peak_idx in detected_peak_idxs]
         # IBIs
-        self.IBIs = self.find_IBIs(self.peaks)
+        self.IBIs = self._find_IBIs(self.peaks)
         # hr and HRV
-        self.hr = self.find_hr(self.IBIs)
-        self.rmssd, self.sdnn = self.find_hrv(self.IBIs)
+        self.hr = self._find_hr(self.IBIs)
+        self.rmssd, self.sdnn = self._find_hrv(self.IBIs)
 
     # Finds IBIs in seconds
-    def find_IBIs(self, peaks):
+    def _find_IBIs(self, peaks):
         IBIs = []
         for i in range(len(peaks)-1):
             IBIs.append(peaks[i+1] - peaks[i])
         return IBIs
 
-    def find_hr(self, IBIs):
+    def _find_hr(self, IBIs):
         IBI_mean = np.average(IBIs)
         hr = 1/IBI_mean * 60
         return hr
 
     # TODO - multiply by 1000, not 100
-    def find_hrv(self, IBIs):
+    def _find_hrv(self, IBIs):
         rmssd = self.find_rmssd(IBIs) * 100
         sdnn = self.find_sdnn(IBIs) * 100
         return rmssd, sdnn
 
-    def find_rmssd(self, IBIs):
+    def _find_rmssd(self, IBIs):
         N = len(IBIs)
         ssd = 0
         for i in range(N-1):
@@ -555,7 +548,7 @@ class SignalProcessor:
         rmssd = np.sqrt(ssd/(N-1))
         return rmssd
 
-    def find_sdnn(self, IBIs):
+    def _find_sdnn(self, IBIs):
         sdnn = np.std(IBIs)
         return sdnn
 
